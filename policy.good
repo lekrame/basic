@@ -1,0 +1,143 @@
+#!/usr/bin/ruby
+require 'aws-sdk'
+require 'optparse'
+
+iamclnt = Aws::IAM::Client.new( region: 'us-west-1')
+opsPolicyDoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": [
+			"opsworks:*",
+			"ec2:DescribeAvailabilityZones",
+			"ec2:DescribeKeyPairs",
+			"ec2:DescribeSecurityGroups",
+			"ec2:DescribeAccountAttributes",
+			"ec2:DescribeAvailabilityZones",
+			"ec2:DescribeSecurityGroups",
+			"ec2:DescribeSubnets",
+			"ec2:DescribeVpcs",
+			"iam:GetRolePolicy",
+			"iam:ListInstanceProfiles",
+			"iam:ListRoles",
+			"iam:ListUsers",
+			"iam:PassRole"
+		],
+		"Resource": "*"
+	}]
+}' 
+resp = iamclnt.create_policy({
+	policy_document: `cat ops.pol`,
+	policy_name:  "OpsWorker",
+})
+#	policy_document: opsPolicyDoc,
+opsworkerPolicy = resp.policy
+emailPolicyDoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": [
+			"ses:ListIdentities",
+			"ses:SendEmail",
+			"ses:SendRawEmail",
+			"ses:VerifyDomainIdentity",
+			"ses:VerifyEmailAddress",
+			"ses:VerifyEmailIdentity"
+		],
+		"Resource": "*"
+	}]
+}' 
+resp = iamclnt.create_policy({
+	policy_document: `cat email.pol`,
+	policy_name:  "emailSender",
+})
+#	policy_document: emailPolicyDoc,
+emailerPolicy = resp.policy
+assdoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": ["sts:AssumeRole"],
+		"Principal": {"AWS":"*"}
+	}]
+}'
+resp = iamclnt.create_role({
+	assume_role_policy_document: assdoc,
+	path: "/", 
+	role_name: "OpsWorker"
+})
+opsworkerRole = resp.role
+#emailerRole = Aws::IAM::Role.new("Communicator", iamclnt)
+iamresrc = Aws::IAM::Resource.new("Communicator", iamclnt)
+emailerRole = iamresrc.create_role({
+	assume_role_policy_document: assdoc,
+	path: "/", 
+	role_name: "Communicator"
+})
+puts "emailer role object creation\n\n%s\n\n" %emailerRole
+iamclnt.attach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Opsworker"
+})
+iamclnt.attach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Communicator"
+})
+iamclnt.attach_role_policy({
+	policy_arn: emailerPolicy.arn, 
+	role_name: "Communicator"
+})
+emailerInstProf = iamclnt.create_instance_profile({
+  instance_profile_name: "emailerHost", 
+})
+pubInstProf = iamclnt.create_instance_profile({
+  instance_profile_name: "pubHost", 
+})
+resp = iamclnt.add_role_to_instance_profile({
+	instance_profile_name: "pubHost", 
+	role_name: "Opsworker", 
+})
+resp = iamclnt.add_role_to_instance_profile({
+	instance_profile_name: "emailerHost", 
+	role_name: "Communicator", 
+})
+
+puts "Hit <Enter> to delete all the new stuff"
+STDIN.gets
+resp = iamclnt.remove_role_from_instance_profile({
+	instance_profile_name: "pubHost", 
+	role_name: "Opsworker", 
+})
+resp = iamclnt.remove_role_from_instance_profile({
+	instance_profile_name: "emailerHost", 
+	role_name: "Communicator", 
+})
+iamclnt.delete_instance_profile({
+  instance_profile_name: "emailerHost", 
+})
+iamclnt.delete_instance_profile({
+  instance_profile_name: "pubHost", 
+})
+iamclnt.detach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Opsworker"
+})
+iamclnt.detach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Communicator"
+})
+iamclnt.detach_role_policy({
+	policy_arn: emailerPolicy.arn, 
+	role_name: "Communicator"
+})
+
+iamclnt.delete_policy(policy_arn: opsworkerPolicy.arn)
+iamclnt.delete_policy(policy_arn: emailerPolicy.arn)
+iamclnt.delete_role(role_name: "Communicator")
+iamclnt.delete_role(role_name: opsworkerRole.role_name)
+puts "Done"
+exit
+=begin
+=end
+=begin
+=end
