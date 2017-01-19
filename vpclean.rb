@@ -7,23 +7,22 @@ script = `basename "#{$0}"`.chomp
 @options = {}
 OptionParser.new do |opts|
 	opts.banner = "#{script} deletes a VPC"
-
 	opts.on("-h", "--help", "show help text") do
 		puts opts
 		exit
 	end
-
-	opts.on("-v", "--verbose", "show more details of setup steps") do
+	opts.on("-v", "--verbose", "show more details of setup and takedown steps") do
 		@options[:verbose] = true
 	end
 end.parse!
+
 if(ARGV.size) == 0
 	abort "supply the VPC name as a command line argument\n"
 end
 @vpcname = ARGV[0]
 
 ##### find the VPC
-waitrSetting = Aws::Waiters::Waiter.new({:delay => 2, :max_attempts => 60})
+waitr = Aws::Waiters::Waiter.new({:delay => 2, :max_attempts => 60})
 @client = Aws::EC2::Client.new
 resp = @client.describe_vpcs
 resp.vpcs.each do |vpc|
@@ -33,6 +32,9 @@ resp.vpcs.each do |vpc|
 			@vpctogo = vpc;
 			break
 	end
+end
+if @vpcid.nil? 
+	abort "VPC named %s not found" %ARGV[0].chomp
 end
 puts "found VPC named %s with ID %s\nDelete? [N]" % [@vpctogo.tags[@nameIdx].value,  @vpcid]; 
 STDIN.gets; 
@@ -48,11 +50,10 @@ def loseTheSubnet(subnetId)
 	sleep 2
 end
 
-##### terminate instances
+##### collect instances to kill
 if @options[:verbose]
 	puts "terminate any instances"
 end
-#opc = Aws::OpsWorks::Client.new(region: 'us-west-1')
 @i_resp = @client.describe_instances
 alive = []
 @i_resp.reservations.each do |rr| # get a list of active (alive) instances
@@ -62,6 +63,19 @@ alive = []
 		end
 	end
 end
+
+##### collect network interfaces
+resp = @client.describe_network_interfaces
+ni_list=[]
+resp[:network_interfaces].each do |ni|
+	ni_list.push {ni.network_interface_id, ni.subnet_id}
+end
+puts "network interfaces:\n"
+p ni_list
+exit
+
+##### terminate instances
+@opc = Aws::OpsWorks::Client.new(region: 'us-west-1')
 sbnts = @client.describe_subnets
 sbnts.subnets.each do |sbnt|
 	if sbnt.vpc_id == @vpcid
