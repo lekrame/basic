@@ -1,6 +1,7 @@
 #!/usr/bin/ruby
 require 'aws-sdk'
 require 'optparse'
+require 'json'
 
 ##### read command line
 script = `basename "#{$0}"`.chomp
@@ -57,9 +58,30 @@ puts "subnets are available"
 #servicerolearn = 'arn:aws:iam::718573612756:role/aws-opsworks-service-role'
 iamclnt = Aws::IAM::Client.new( region: 'us-west-1')
 resp = iamclnt.create_role({
-	assume_role_policy_document: `cat opsworker.role`, 
+	assume_role_policy_document: "{
+	\"Version\": \"2012-10-17\",
+	\"Statement\": [{
+		\"Effect\": \"Allow\",
+		\"Action\": [
+			\"opsworks:*\",
+			\"ec2:DescribeAvailabilityZones\",
+			\"ec2:DescribeKeyPairs\",
+			\"ec2:DescribeSecurityGroups\",
+			\"ec2:DescribeAccountAttributes\",
+			\"ec2:DescribeAvailabilityZones\",
+			\"ec2:DescribeSecurityGroups\",
+			\"ec2:DescribeSubnets\",
+			\"ec2:DescribeVpcs\",
+			\"iam:GetRolePolicy\",
+			\"iam:ListInstanceProfiles\",
+			\"iam:ListRoles\",
+			\"iam:ListUsers\",
+			\"iam:PassRole\"
+		],
+	\"Principal\": {\"AWS\": \"*\"}}]
+}",
 	path: "/", 
-	role_name: "OpsWorker", 
+	role_name: "OpsWorker"
 })
 opsworkerRole = resp.role
 
@@ -77,7 +99,6 @@ if @options[:verbose]
 	puts "create OpsWorks stack"
 end
 opsclnt = Aws::OpsWorks::Client.new( region: 'us-west-1')
-
 itype = "t2.micro"
 imgid = "ami-b73d6cd7"
 stackconfigmgr = Aws::OpsWorks::Types::StackConfigurationManager.new(name: 'Chef', version: '12') # override dflt chef config (v. 11.4)
@@ -88,17 +109,17 @@ rslt = opsclnt.create_stack({
 	service_role_arn: opsworkerRole.arn,
 	configuration_manager: stackconfigmgr,
 	vpc_id: vpc.vpc_id,
-	default_subnet_id: subnet0.subnet_id
-#	use_custom_cookbooks: false,
-#	use_opsworks_security_groups: false,
-#	custom_cookbooks_source: {
-#		type: "git", # accepts git, svn, archive, s3
-#		url: "String",
+	default_subnet_id: subnet0.subnet_id,
+	use_custom_cookbooks: true,
+	use_opsworks_security_groups: false,
+	custom_cookbooks_source: {
+		type: "git", # accepts git, svn, archive, s3
+		url: "https://github.com/lekrame/chef-repo",
 #		username: "String",
 #		password: "String",
 #		ssh_key: "String",
 #		revision: "String",
-#	},
+	},
 })
 stackid = rslt.stack_id
 if @options[:verbose]
