@@ -2,7 +2,11 @@
 require 'aws-sdk'
 require 'optparse'
 
-##### read command line
+#######################
+##                   ##
+## READ COMMAND LINE ##
+##                   ##
+#######################
 script = `basename "#{$0}"`.chomp
 @options = {}
 OptionParser.new do |opts|
@@ -21,7 +25,11 @@ if(ARGV.size) == 0
 end
 @vpcname = ARGV[0]
 
-##### find the VPC
+##################
+##              ##
+## FIND THE VPC ##
+##              ##
+##################
 waitr = Aws::Waiters::Waiter.new({:delay => 2, :max_attempts => 60})
 @owclient = Aws::OpsWorks::Client.new
 @ec2client = Aws::EC2::Client.new
@@ -51,7 +59,11 @@ def loseTheSubnet(subnetId)
 	sleep 2
 end
 
-##### collect opsworks structures to kill
+#########################################
+##                                     ##
+## COLLECT OPSWORKS STRUCTURES TO KILL ##
+##                                     ##
+#########################################
 # first, find all stacks in the vpc
 mystacks = []
 @stackids_to_delete = []
@@ -60,7 +72,11 @@ mystacks.each do |stk|
 	@stackids_to_delete.push(stk.stack_id) if stk.vpc_id == @vpcid
 end
 
-##### collect instances to kill
+###############################
+##                           ##
+## COLLECT INSTANCES TO KILL ##
+##                           ##
+###############################
 if @options[:verbose]
 	puts "terminate any instances"
 end
@@ -88,12 +104,25 @@ end
 end
 
 
-##### delete subnets
+####################
+##                ##
+## DELETE SUBNETS ##
+##                ##
+####################
 sbnts = @ec2client.describe_subnets
 sbnts.subnets.each do |sbnt|
 	if sbnt.vpc_id == @vpcid
 		loseTheSubnet(sbnt.subnet_id)
 	end
+end
+
+#### delete security groups
+sec_grps = @ec2client.describe_security_groups({
+	filters:[
+		{name: "vpc-id", values: [@vpcid]}
+	]
+}).security_groups.each do |sgp|
+	@ec2client.delete_security_group({group_id: sgp.group_id}) if sgp.group_name != "default"
 end
 
 @ec2client.delete_vpc(:vpc_id => @vpcid)
