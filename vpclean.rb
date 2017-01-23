@@ -78,7 +78,7 @@ end
 
 ###############################
 ##                           ##
-## COLLECT INSTANCES TO KILL ##
+##     INSTANCES TO KILL     ##
 ##                           ##
 ###############################
 if @options[:verbose]
@@ -137,7 +137,7 @@ end
 iamclient = Aws::IAM::Client.new
 instprofs = iamclient.list_instance_profiles.instance_profiles
 instprofs.each do |i|
-	if (i.create_date <=> (Time.now - @options[:age])) == 1
+	if (i.create_date <=> (Time.now - @options[:age].to_i)) == 1
 		i.roles.each do |r|
 			iamclient.remove_role_from_instance_profile({
 			  instance_profile_name: i.instance_profile_name, 
@@ -149,7 +149,7 @@ instprofs.each do |i|
 end
 roles = iamclient.list_roles.roles
 roles.each do |r|
-	if (r.create_date<=>(Time.now - @options[:age])) == 1
+	if (r.create_date<=>(Time.now - @options[:age].to_i)) == 1
 		policies = iamclient.list_attached_role_policies({ role_name: r.role_name }).attached_policies
 		policies.each do |p|
 			iamclient.detach_role_policy({
@@ -162,7 +162,7 @@ roles.each do |r|
 end
 policies = iamclient.list_policies.policies
 policies.each do |p|
-	iamclient.delete_policy(policy_arn: p.arn) if (p.create_date<=>(Time.now - @options[:age])) == 1
+	iamclient.delete_policy(policy_arn: p.arn) if (p.create_date<=>(Time.now - @options[:age].to_i)) == 1
 end
 
 @ec2client.delete_vpc(:vpc_id => @vpcid)
