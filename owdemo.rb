@@ -1,9 +1,13 @@
 #!/usr/bin/ruby
 require 'aws-sdk'
 require 'optparse'
-require 'json'
+#require 'json'
 
-##### read command line
+########################
+##                    ##
+## PARSE COMMAND LINE ##
+##                    ##
+########################
 script = `basename "#{$0}"`.chomp
 @options = {}
 @options[:stackname] = "demostack" #default
@@ -32,13 +36,21 @@ if(ARGV.size) == 0
 end
 vpcname = ARGV[0]
 
-##### create a VPC
+##################
+##              ##
+## CREATE A VPC ##
+##              ##
+##################
 er = Aws::EC2::Resource.new
 vpc = er.create_vpc(cidr_block: "10.9.0.0/16")
 vpc.wait_until_available
 er.create_tags({resources: ["#{vpc.id}"], tags: [{key: "Name", value: "#{vpcname}"}, {key: "Created", value: Time.now.to_s}]})
 
-##### add subnets
+#################
+##             ##
+## ADD SUBNETS ##
+##             ##
+#################
 subnet0 = vpc.create_subnet({
 	cidr_block: "10.9.0.0/24",
 	availability_zone: "us-west-1a"
@@ -53,48 +65,160 @@ puts "create subnet 20"
 subnet20.wait_until(delay: 2, max_attempts: 3){|sub| sub.state == "available"}
 puts "subnets are available"
 
-# create these:
-#instanceprofilearn = 'arn:aws:iam::718573612756:instance-profile/aws-opsworks-ec2-role '
-#servicerolearn = 'arn:aws:iam::718573612756:role/aws-opsworks-service-role'
+#####################
+##                 ##
+## SECURITY GROUPS ##
+##                 ##
+#####################
+private_security = er.create_security_group({
+  dry_run: false,
+  group_name: "private security", # required
+  description: "used for private subnet", # required
+  vpc_id: vpc.vpc_id,
+})
+private_security.authorize_ingress({
+	from_port: 22,
+  to_port: 22,
+	ip_protocol: "tcp",
+	cidr_ip: "10.9.0.0/24"
+})
+=begin
+private_security.authorize_egress({
+	ip_permissions: [
+		from_port: 0,
+		to_port: 65535,
+		ip_protocol: "-1",
+		ip_ranges:[
+			cidr_ip: "0.0.0.0/0"
+		]
+	]
+})
+=end
+public_security = er.create_security_group({
+  dry_run: false,
+  group_name: "public security", # required
+  description: "used for public subnet", # required
+  vpc_id: vpc.vpc_id,
+})
+public_security.authorize_ingress({
+	from_port: 22,
+  to_port: 22,
+	ip_protocol: "tcp",
+	cidr_ip: "0.0.0.0/0"
+})
+=begin
+public_security.authorize_egress({
+	from_port: 0,
+  to_port: 65535,
+	ip_protocol: "-1",
+	cidr_ip: "0.0.0.0/0"
+})
+=end
+
+########################
+##                    ##
+## CREATE IAM OBJECTS ##
+##                    ##
+########################
 iamclnt = Aws::IAM::Client.new( region: 'us-west-1')
-resp = iamclnt.create_role({
-	assume_role_policy_document: "{
-	\"Version\": \"2012-10-17\",
-	\"Statement\": [{
-		\"Effect\": \"Allow\",
-		\"Action\": [
-			\"opsworks:*\",
-			\"ec2:DescribeAvailabilityZones\",
-			\"ec2:DescribeKeyPairs\",
-			\"ec2:DescribeSecurityGroups\",
-			\"ec2:DescribeAccountAttributes\",
-			\"ec2:DescribeAvailabilityZones\",
-			\"ec2:DescribeSecurityGroups\",
-			\"ec2:DescribeSubnets\",
-			\"ec2:DescribeVpcs\",
-			\"iam:GetRolePolicy\",
-			\"iam:ListInstanceProfiles\",
-			\"iam:ListRoles\",
-			\"iam:ListUsers\",
-			\"iam:PassRole\"
+opsPolicyDoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": [
+			"opsworks:*",
+			"ec2:DescribeAvailabilityZones",
+			"ec2:DescribeKeyPairs",
+			"ec2:DescribeSecurityGroups",
+			"ec2:DescribeAccountAttributes",
+			"ec2:DescribeAvailabilityZones",
+			"ec2:DescribeSecurityGroups",
+			"ec2:DescribeSubnets",
+			"ec2:DescribeVpcs",
+			"iam:GetRolePolicy",
+			"iam:ListInstanceProfiles",
+			"iam:ListRoles",
+			"iam:ListUsers",
+			"iam:PassRole"
 		],
-	\"Principal\": {\"AWS\": \"*\"}}]
-}",
+		"Resource": "*"
+	}]
+}' 
+opsworkerPolicy = iamclnt.create_policy({
+	policy_document: `cat ops.pol`,
+	policy_name:  "OpsWorker",
+}).policy
+emailPolicyDoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": [
+			"ses:ListIdentities",
+			"ses:SendEmail",
+			"ses:SendRawEmail",
+			"ses:VerifyDomainIdentity",
+			"ses:VerifyEmailAddress",
+			"ses:VerifyEmailIdentity"
+		],
+		"Resource": "*"
+	}]
+}' 
+emailerPolicy = iamclnt.create_policy({
+	policy_document: `cat email.pol`,
+	policy_name:  "emailSender",
+}).policy
+assumeroledoc = '{
+	"Version": "2012-10-17",
+	"Statement": [{
+		"Effect": "Allow",
+		"Action": ["sts:AssumeRole"],
+		"Principal": {"AWS":"*"}
+	}]
+}'
+resp = iamclnt.create_role({
+	assume_role_policy_document: assumeroledoc,
 	path: "/", 
 	role_name: "OpsWorker"
 })
 opsworkerRole = resp.role
-
-resp = iamclnt.create_instance_profile({
-  instance_profile_name: "PrivateServer"
+iamresrc = Aws::IAM::Resource.new("Communicator", iamclnt)
+emailerRole = iamresrc.create_role({
+	assume_role_policy_document: assumeroledoc,
+	path: "/", 
+	role_name: "Communicator"
 })
-pvtSrvInstProfile = resp.instance_profile
-resp = iamclnt.create_instance_profile({
-  instance_profile_name: "publicServer"
+iamclnt.attach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Opsworker"
 })
-pubSrvInstProfile = resp.instance_profile
+iamclnt.attach_role_policy({
+	policy_arn: opsworkerPolicy.arn, 
+	role_name: "Communicator"
+})
+iamclnt.attach_role_policy({
+	policy_arn: emailerPolicy.arn, 
+	role_name: "Communicator"
+})
+emailerInstProf = iamclnt.create_instance_profile({
+  instance_profile_name: "emailerHost", 
+})
+pubInstProf = iamclnt.create_instance_profile({
+  instance_profile_name: "pubHost", 
+})
+resp = iamclnt.add_role_to_instance_profile({
+	instance_profile_name: "pubHost", 
+	role_name: "Opsworker", 
+})
+resp = iamclnt.add_role_to_instance_profile({
+	instance_profile_name: "emailerHost", 
+	role_name: "Communicator", 
+})
 
-##### create OpsWorks stack
+###########################
+##                       ##
+## CREATE OPSWORKS STACK ##
+##                       ##
+###########################
 if @options[:verbose]
 	puts "create OpsWorks stack"
 end
@@ -102,7 +226,7 @@ opsclnt = Aws::OpsWorks::Client.new( region: 'us-west-1')
 itype = "t2.micro"
 imgid = "ami-b73d6cd7"
 stackconfigmgr = Aws::OpsWorks::Types::StackConfigurationManager.new(name: 'Chef', version: '12') # override dflt chef config (v. 11.4)
-rslt = opsclnt.create_stack({
+stackid = opsclnt.create_stack({
 	name: @options[:stackname],
 	region: 'us-west-1',
 	default_instance_profile_arn: pubSrvInstProfile.arn,
@@ -120,28 +244,26 @@ rslt = opsclnt.create_stack({
 #		ssh_key: "String",
 #		revision: "String",
 	},
-})
-stackid = rslt.stack_id
+}).stack_id
 if @options[:verbose]
 	puts "Created stack #{stackname}, id = #{stackid}"
 end
+rslt = opsclnt.create_layer(
+	stack_id: stackid, 
+	type: "custom",
+	name: "klayer",
+	shortname: "kk"
+)
+klayerid = rslt.layer_id
+rslt = opsclnt.create_layer(
+	stack_id: stackid, 
+	type: "custom",
+	name: "jlayer",
+	shortname: "jj"
+)
 =begin
 rslt = opsclnt.create_layer(
 	stack_id: stackid, 
-	type: "custom",
-	name: "klayer",
-	shortname: "kk"
-)
-klayerid = rslt.layer_id
-rslt = opsclnt.create_layer(
-	stack_id: stackid, 
-	type: "custom",
-	name: "jlayer",
-	shortname: "jj"
-)
-=end
-rslt = opsclnt.create_layer(
-	stack_id: stackid, 
 	type: "aws-flow-ruby",
 	name: "klayer",
 	shortname: "kk"
@@ -154,25 +276,28 @@ rslt = opsclnt.create_layer(
 	stack_id: stackid, 
 	type: "aws-flow-ruby",
 	name: "jlayer",
-	shortname: "jj"
-#	custom_instance_profile_arn: "String",
+	shortname: "jj",
+	custom_instance_profile_arn: "String",
+	auto_assign_public_ips: true,
+	install_updates_on_boot: true,
 #	custom_json: "String",
-#	custom_security_group_ids: ["String"],
-#	custom_recipes: {
-#		setup: ["String"],
-#		configure: ["String"],
-#		deploy: ["String"],
-#		undeploy: ["String"],
-#		shutdown: ["String"],
-#	},
+	custom_security_group_ids: ["String"],
+	custom_recipes: {
+		setup: ["String"],
+		configure: ["String"],
+		deploy: ["String"],
+		undeploy: ["String"],
+		shutdown: ["String"]
+	},
 )
 jlayerid = rslt.layer_id
+=end
 
-##### configure cookbooks xxx
-
-
-##### create instances
-
+######################
+##                  ##
+## CREATE INSTANCES ##
+##                  ##
+######################
 response = opsclnt.create_instance ({
 	stack_id: stackid, 
   layer_ids: [jlayerid],
@@ -184,7 +309,7 @@ response = opsclnt.create_instance ({
 	os: 'Custom'
 })
 iid0 = response.instance_id
-puts "Waiting for instance to start"
+puts "Waiting for instance 0 to start"
 opsclnt.start_instance(instance_id: iid0)
 
 response = opsclnt.create_instance ({
@@ -198,7 +323,7 @@ response = opsclnt.create_instance ({
 	os: 'Custom'
 })
 iid20 = response.instance_id
-puts "Waiting for instance to start"
+puts "Waiting for instance 20 to start"
 opsclnt.start_instance(instance_id: iid20)
 
 puts "Wait for instance (id = %s) to come online" %iid0
@@ -211,19 +336,21 @@ puts "Instance (ids = %s, %s) are online" %[iid0, iid20]
 puts "All built; hit <Enter> to destroy"
 STDIN.gets
 
-tokill = []
+=begin
+=end
+insts_tokill = []
 puts "terminate any instances"
 vpc.subnets.each do |sn|
 	sn.instances.each do |inst|
-		tokill.push inst
+		insts_tokill.push inst
 	end
 end
 puts "Terminating instances"
-tokill.each do |inst|
+insts_tokill.each do |inst|
 	inst.terminate
 end
 puts "wait until all terminated"
-tokill.each do |inst|
+insts_tokill.each do |inst|
 	inst.wait_until_terminated
 end
 puts "terminations complete"
@@ -234,6 +361,11 @@ puts "terminations complete"
 @ec2clnt.delete_network_interface({
 	network_interface_id: ni_resp20.network_interface.network_interface_id 
 })
+
+securitygroup.delete({
+  dry_run: false,
+  group_name: "String",
+})
 def loseTheSubnet(subnetInst)
 	if @options[:verbose]
 		puts "delete subnet with id #{subnetInst.subnet_id}"
@@ -241,6 +373,7 @@ def loseTheSubnet(subnetInst)
 	subnetInst.delete
 	sleep 2
 end
+
 if @options[:verbose]
 	puts "terminate subnets"
 end

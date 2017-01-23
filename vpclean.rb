@@ -116,7 +116,11 @@ sbnts.subnets.each do |sbnt|
 	end
 end
 
-#### delete security groups
+############################
+##                        ##
+## DELETE SECURITY GROUPS ##
+##                        ##
+############################
 sec_grps = @ec2client.describe_security_groups({
 	filters:[
 		{name: "vpc-id", values: [@vpcid]}
