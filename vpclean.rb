@@ -9,6 +9,7 @@ require 'optparse'
 #######################
 script = `basename "#{$0}"`.chomp
 @options = {}
+@options[:age] = 14400 #default 4 hours
 OptionParser.new do |opts|
 	opts.banner = "#{script} deletes a VPC"
 	opts.on("-h", "--help", "show help text") do
@@ -17,6 +18,9 @@ OptionParser.new do |opts|
 	end
 	opts.on("-v", "--verbose", "show more details of setup and takedown steps") do
 		@options[:verbose] = true
+	end
+	opts.on("-a", "--age SECS", "how many seconds back since creation of earliest stuff to delete") do |a|
+		@options[:age] = a
 	end
 end.parse!
 
@@ -84,17 +88,17 @@ end
 @stackids_to_delete.each do |sid|
 	layerids_to_delete = []
 	instanceids_to_delete = []
-	@instances_to_delete.push(@owclient.describe_instances({ stack_id: sid }).instances)
+	@instances_to_delete.concat(@owclient.describe_instances({ stack_id: sid }).instances)
 #	@instances_to_delete.sort!.uniq!
 	@instances_to_delete.each do |inst|
 		@owclient.stop_instance({instance_id: inst.instance_id})
 		instanceids_to_delete.push(inst.instance_id)
 	end
-	@owclient.wait_until(:instance_stopped, {:instance_ids => instanceids_to_delete})
+	@owclient.wait_until(:instance_stopped, {:instance_ids => instanceids_to_delete}) if instanceids_to_delete.length > 0
 	instanceids_to_delete.each do |iid|
 		@owclient.terminate_instance({instance_id: iid})
 	end
-	@owclient.wait_until(:instance_terminated, {:instance_ids => instanceids_to_delete})
+	@owclient.wait_until(:instance_terminated, {:instance_ids => instanceids_to_delete}) if instanceids_to_delete.length > 0
 	layers_to_delete = @owclient.describe_layers({stack_id: sid }).layers
 	layers_to_delete.each do |layer|
 		layerids_to_delete.push(layer.layer_id)
@@ -127,6 +131,38 @@ sec_grps = @ec2client.describe_security_groups({
 	]
 }).security_groups.each do |sgp|
 	@ec2client.delete_security_group({group_id: sgp.group_id}) if sgp.group_name != "default"
+end
+
+#### delete roles and policies
+iamclient = Aws::IAM::Client.new
+instprofs = iamclient.list_instance_profiles.instance_profiles
+instprofs.each do |i|
+	if (i.create_date <=> (Time.now - @options[:age])) == 1
+		i.roles.each do |r|
+			iamclient.remove_role_from_instance_profile({
+			  instance_profile_name: i.instance_profile_name, 
+			  role_name: r.role_name, 
+			})
+		end
+		iamclient.delete_instance_profile(instance_profile_name: i.instance_profile_name)
+	end
+end
+roles = iamclient.list_roles.roles
+roles.each do |r|
+	if (r.create_date<=>(Time.now - @options[:age])) == 1
+		policies = iamclient.list_attached_role_policies({ role_name: r.role_name }).attached_policies
+		policies.each do |p|
+			iamclient.detach_role_policy({
+	  		role_name: r.role_name,
+	  		policy_arn: p.policy_arn
+			})
+		end
+		iamclient.delete_role({role_name: r.role_name}) 
+	end
+end
+policies = iamclient.list_policies.policies
+policies.each do |p|
+	iamclient.delete_policy(policy_arn: p.arn) if (p.create_date<=>(Time.now - @options[:age])) == 1
 end
 
 @ec2client.delete_vpc(:vpc_id => @vpcid)
